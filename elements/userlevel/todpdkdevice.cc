@@ -21,8 +21,36 @@
 #include <click/error.hh>
 
 #include "todpdkdevice.hh"
+#include <click/straccum.hh>
 
 CLICK_DECLS
+
+static void print_ip_pair(Packet *p)
+{
+    if (p->has_network_header()) {
+        StringAccum sa;
+        sa  << IPAddress(p->ip_header()->ip_src)
+            << " > "
+            << IPAddress(p->ip_header()->ip_dst);
+        fprintf(stderr, "-- %s\n", sa.c_str());
+    }
+    else {
+        fprintf(stderr, "-- No IP header marked\n");
+    }
+}
+static void print_mbuf_ip_pair(struct rte_mbuf *mbuf) {
+    int ip_off = 14;
+    int src_off = 12;
+    int dst_off = 16;
+    rte_pktmbuf_dump(stderr, mbuf, 20);
+    if (mbuf->buf_len >= 20) {
+        StringAccum sa;
+        sa  << IPAddress(rte_pktmbuf_mtod_offset(mbuf, unsigned char *, ip_off+src_off))
+            << " > "
+            << IPAddress(rte_pktmbuf_mtod_offset(mbuf, unsigned char *, ip_off+dst_off));
+        fprintf(stderr, "-- %s\n", sa.c_str());
+    }
+}
 
 ToDPDKDevice::ToDPDKDevice() :
     _iqueues(), _port_id(0), _blocking(false),
@@ -128,7 +156,17 @@ inline struct rte_mbuf* get_mbuf(Packet* p, bool create=true) {
     if (likely(DPDKDevice::is_dpdk_packet(p) && !p->shared())) {
         /* If the packet is an unshared DPDK packet, we can send
          *  the mbuf as it to DPDK*/
+        {
+            print_ip_pair(p);
+        }
         mbuf = (struct rte_mbuf *) (p->buffer() - sizeof(struct rte_mbuf));
+        {
+            print_mbuf_ip_pair(mbuf);
+        }
+        mbuf = (struct rte_mbuf *) p->destructor_argument();
+        {
+            print_mbuf_ip_pair(mbuf);
+        }
         rte_pktmbuf_pkt_len(mbuf) = p->length();
         rte_pktmbuf_data_len(mbuf) = p->length();
         static_cast<WritablePacket*>(p)->set_buffer(0);
@@ -180,7 +218,7 @@ void ToDPDKDevice::flush_internal_queue(InternalQueue &iqueue) {
             // The sub_burst wraps around the ring
             sub_burst = _iqueue_size - iqueue.index;
         r = rte_eth_tx_burst(_port_id, queue_for_thread_begin(), &iqueue.pkts[iqueue.index],
-                             iqueue.nr_pending);
+                             sub_burst);
 
         iqueue.nr_pending -= r;
         iqueue.index += r;
